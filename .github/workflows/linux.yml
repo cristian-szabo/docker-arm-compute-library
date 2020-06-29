@@ -1,0 +1,131 @@
+name: Linux
+
+on: [push]
+
+jobs:
+  Build:
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      matrix:
+        os: [ubuntu-18.04]
+        arm_architecture: [arm32-v7, arm64-v8]
+        arm_compute_library_version: [20.05, 20.02.1, 19.11.1]
+        linaro_gnu_toolchain_version: [6.3.1-2017.05]
+
+    container:
+      image: docker:19
+
+    services:
+      dind:
+        image: docker:19-dind
+
+    steps:
+    - name: Checkout Source Code
+      uses: actions/checkout@v1
+
+    - name: Cache Docker Image
+      uses: actions/cache@v1
+      id: cache
+      with:
+        path: cache
+        key: ${{ runner.os }}-Linux-${{ hashFiles('Linux/Dockerfile') }}
+
+    - name: Load Docker Image
+      if: steps.cache.outputs.cache-hit
+      run:  docker load -i cache/image.tar
+
+    - name: Build Docker Image
+      run: | 
+        docker build \
+          --cache-from image:latest \
+          -t image:latest \
+          --build-arg ARM_ARCHITECTURE=${{ matrix.arm_architecture }} \
+          --build-arg ARM_COMPUTE_LIBRARY_VERSION=${{ matrix.arm_compute_library_version }} \
+          --build-arg LINARO_GNU_TOOLCHAIN_VERSION=${{ matrix.linaro_gnu_toolchain_version }} \
+          -f Linux/Dockerfile .
+
+    - name: Save Docker Image
+      run: |
+        mkdir -p cache
+        docker save -o cache/image.tar image:latest
+        chmod 777 -R cache
+        
+    - name: Upload Docker Image
+      uses: actions/upload-artifact@v2
+      with:
+        name: Linux-${{ matrix.arm_architecture }}-${{ matrix.arm_compute_library_version }}-${{ matrix.linaro_gnu_toolchain_version }}
+        path: cache/image.tar
+
+  Test:
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      matrix:
+        os: [ubuntu-18.04]
+        arm_architecture: [arm32-v7, arm64-v8]
+        arm_compute_library_version: [20.05, 20.02.1, 19.11.1]
+        linaro_gnu_toolchain_version: [6.3.1-2017.05]
+
+    needs: [Build]
+
+    container:
+      image: docker:19
+
+    services:
+      dind:
+        image: docker:19-dind
+
+    steps:
+      - name: Download Docker Image
+        uses: actions/download-artifact@v2
+        with:
+          name: Linux-${{ matrix.arm_architecture }}-${{ matrix.arm_compute_library_version }}-${{ matrix.linaro_gnu_toolchain_version }}
+          path: cache
+
+      - name: Load Docker Image
+        run:  docker load -i cache/image.tar
+
+      - name: Create Container
+        run: |
+          docker run -d --name test image:latest /bin/sh
+          docker logs test
+          if [ `docker inspect test --format='{{.State.ExitCode}}'` -ne 0 ]; then exit 1; fi 
+  Release:
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      matrix:
+        os: [ubuntu-18.04]
+        arm_architecture: [arm32-v7, arm64-v8]
+        arm_compute_library_version: [20.05, 20.02.1, 19.11.1]
+        linaro_gnu_toolchain_version: [6.3.1-2017.05]
+    
+    needs: [Build, Test]
+
+    container:
+      image: docker:19
+
+    services:
+      dind:
+        image: docker:19-dind
+
+    steps:
+      - name: Download Docker Image
+        uses: actions/download-artifact@v1
+        with:
+          name: Linux-${{ matrix.arm_architecture }}-${{ matrix.arm_compute_library_version }}-${{ matrix.linaro_gnu_toolchain_version }}
+          path: cache
+
+      - name: Docker Registry LogIn
+        run: docker login docker.pkg.github.com -u ${{ secrets.DOCKER_USERNAME }} -p ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Load Docker Image
+        run: docker load -i cache/image.tar
+
+      - name: Docker Image Tag
+        run: |
+          docker tag image:latest docker.pkg.github.com/cristian-szabo/docker-arm-compute-library/linux-${{ matrix.arm_architecture }}:${{ matrix.arm_compute_library_version }}
+      
+      - name: Docker Image Publish    
+        run: docker push docker.pkg.github.com/cristian-szabo/docker-arm-compute-library/linux-${{ matrix.arm_architecture }}:${{ matrix.arm_compute_library_version }}
